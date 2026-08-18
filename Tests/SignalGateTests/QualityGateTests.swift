@@ -225,6 +225,44 @@ final class QualityGateTests: XCTestCase {
         XCTAssertEqual(policy.power, 0.80)
     }
 
+    /// The gate blocks if either the slice family or the overall test fires,
+    /// so running both at the full run-level alpha would put the true
+    /// false-block rate near their union. The budget is split; this asserts the
+    /// split is real and adds up, rather than being described only in a comment.
+    func testRunLevelErrorBudgetIsSplitAcrossBothFamilies() {
+        let policy = GatePolicy(confidence: 0.95, sliceFalseDiscoveryRate: 0.05)
+        XCTAssertEqual(policy.runLevelAlpha, 0.05, accuracy: 1e-12)
+        XCTAssertEqual(policy.overallAlpha, 0.025, accuracy: 1e-12)
+        XCTAssertEqual(policy.overallConfidence, 0.975, accuracy: 1e-12)
+        XCTAssertEqual(policy.sliceQ, 0.025, accuracy: 1e-12)
+        XCTAssertEqual(policy.perArmConfidence, 0.9875, accuracy: 1e-12)
+
+        // The two allocations sum to the run-level budget.
+        XCTAssertEqual(policy.overallAlpha + policy.sliceQ, policy.runLevelAlpha, accuracy: 1e-12)
+    }
+
+    /// The split must reach the actual interval, not just the policy struct.
+    /// A wider allocation has to produce a visibly wider reported interval.
+    func testTheSplitActuallyWidensTheReportedInterval() throws {
+        let baseline = samples("en-US", passed: 880, total: 1000, prefix: "b")
+        let candidate = samples("en-US", passed: 870, total: 1000, prefix: "c")
+
+        let strict = QualityGate.evaluate(
+            baseline: baseline, candidate: candidate, judgeMatrix: goodJudge,
+            policy: GatePolicy(confidence: 0.95)
+        )
+        let loose = QualityGate.evaluate(
+            baseline: baseline, candidate: candidate, judgeMatrix: goodJudge,
+            policy: GatePolicy(confidence: 0.80)
+        )
+        let strictInterval = try XCTUnwrap(strict.differenceInterval)
+        let looseInterval = try XCTUnwrap(loose.differenceInterval)
+
+        XCTAssertGreaterThan(strictInterval.width, looseInterval.width)
+        XCTAssertEqual(strictInterval.confidence, 0.975, accuracy: 1e-12,
+                       "the reported interval is built at the split level, not the run level")
+    }
+
     func testReportIsCodableRoundTrip() throws {
         let baseline = samples("en-US", passed: 176, total: 200, prefix: "b")
         let candidate = samples("en-US", passed: 150, total: 200, prefix: "c")

@@ -121,8 +121,14 @@ final class NegativeControlTests: XCTestCase {
                 bothPass: 66, judgePassHumanFail: 4, judgeFailHumanPass: 3, bothFail: 27
             )
         )
-        XCTAssertFalse(report.verdict.isBlock,
-                       "SignalGate must not condemn a 2-sample difference at n=12")
+        // Asserting the exact verdict, not merely "not block". `isBlock == false`
+        // is also true of an implementation hardwired to return `.pass` — that
+        // is, of exactly the two-state gate this file exists to discredit.
+        guard case .inconclusive(let reason, _) = report.verdict else {
+            return XCTFail("expected inconclusive, got \(report.verdict)")
+        }
+        XCTAssertEqual(reason, .insufficientEvidence)
+        XCTAssertFalse(report.verdict.allowsMerge)
     }
 
     // MARK: - The judge precondition is load-bearing
@@ -174,6 +180,35 @@ final class NegativeControlTests: XCTestCase {
         XCTAssertEqual(candidateTally.overall.passed, GoldenCounts.realRegressionCandidatePassed60)
     }
 
+    /// The draw must be *nested*: the run at n is a strict prefix of the run at
+    /// any larger n. Without this the demo's slider models "run a different
+    /// experiment at a different n" rather than "collect more samples", and the
+    /// verdict visibly flickers as the slider moves.
+    func testDrawsAreNestedSoLargerSamplesExtendSmallerOnes() {
+        for scenario in GateScenario.allCases {
+            let small = scenario.draw(samplesPerArm: 60)
+            let large = scenario.draw(samplesPerArm: 600)
+            for sliceID in GateScenario.sliceIDs {
+                let smallSlice = small.baseline.filter { $0.sliceID == sliceID }.map(\.passed)
+                let largeSlice = large.baseline.filter { $0.sliceID == sliceID }.map(\.passed)
+                XCTAssertFalse(smallSlice.isEmpty, "\(scenario.rawValue)/\(sliceID)")
+                XCTAssertLessThanOrEqual(smallSlice.count, largeSlice.count)
+                XCTAssertEqual(Array(largeSlice.prefix(smallSlice.count)), smallSlice,
+                               "\(scenario.rawValue)/\(sliceID) is not a prefix of the larger draw")
+            }
+        }
+    }
+
+    /// The draw must return exactly what was asked for, including when the
+    /// count does not divide evenly across slices.
+    func testDrawReturnsExactlyTheRequestedCountEvenWhenIndivisible() {
+        for size in [25, 26, 61, 121, 1_001] {
+            let drawn = GateScenario.equivalent.draw(samplesPerArm: size)
+            XCTAssertEqual(drawn.baseline.count, size, "baseline at \(size)")
+            XCTAssertEqual(drawn.candidate.count, size, "candidate at \(size)")
+        }
+    }
+
     func testEveryScenarioDrawsTheRequestedSampleCount() {
         for scenario in GateScenario.allCases {
             let drawn = scenario.draw(samplesPerArm: 120)
@@ -205,6 +240,6 @@ enum GoldenCounts {
     /// `GateScenario.realRegression.draw(samplesPerArm: 60, seed: 20_260_818)`
     /// — baseline arm, observed pass count. Baseline rate is 0.88, candidate
     /// 0.76, so 53/60 vs 45/60 is the expected shape.
-    static let realRegressionBaselinePassed60 = 53
-    static let realRegressionCandidatePassed60 = 45
+    static let realRegressionBaselinePassed60 = 52
+    static let realRegressionCandidatePassed60 = 50
 }

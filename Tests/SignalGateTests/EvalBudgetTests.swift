@@ -122,24 +122,36 @@ final class EvalBudgetTests: XCTestCase {
         )
         let costPerCall = 0.02
 
-        await withTaskGroup(of: Bool.self) { group in
-            for index in 0..<300 {
-                if index.isMultiple(of: 3) {
-                    group.addTask {
-                        let state = await ledger.state()
-                        // Invariant: spend is always exactly calls × unit cost.
-                        return abs(state.spentUSD - Double(state.inferenceCalls) * costPerCall) < 1e-9
-                    }
-                } else {
-                    group.addTask {
-                        _ = await ledger.charge(costUSD: costPerCall, latencySeconds: 0.1)
-                        return true
+        // Repeated, because a single pass can schedule every reader before every
+        // writer — on a 2-core runner that is common — and then all readers see
+        // (0, 0) and the invariant holds without ever exercising a torn window.
+        // `observedNonZero` makes that vacuous outcome a failure.
+        var observedNonZero = false
+        for _ in 0..<25 {
+            await withTaskGroup(of: (consistent: Bool, calls: Int)?.self) { group in
+                for index in 0..<120 {
+                    if index.isMultiple(of: 3) {
+                        group.addTask {
+                            let state = await ledger.state()
+                            // Invariant: spend is always exactly calls × unit cost.
+                            let ok = abs(state.spentUSD - Double(state.inferenceCalls) * costPerCall) < 1e-9
+                            return (ok, state.inferenceCalls)
+                        }
+                    } else {
+                        group.addTask {
+                            _ = await ledger.charge(costUSD: costPerCall, latencySeconds: 0.1)
+                            return nil
+                        }
                     }
                 }
-            }
-            for await consistent in group {
-                XCTAssertTrue(consistent, "observed a partially-applied charge")
+                for await observation in group {
+                    guard let observation else { continue }
+                    XCTAssertTrue(observation.consistent, "observed a partially-applied charge")
+                    if observation.calls > 0 { observedNonZero = true }
+                }
             }
         }
+        XCTAssertTrue(observedNonZero,
+                      "no reader ever observed a non-zero ledger — the invariant held vacuously")
     }
 }

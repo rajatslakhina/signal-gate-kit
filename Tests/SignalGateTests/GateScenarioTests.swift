@@ -23,7 +23,40 @@ final class GateScenarioTests: XCTestCase {
 
     func testEquivalentBuildPassesOnceThereIsEnoughEvidence() {
         XCTAssertTrue(GateScenario.equivalent.evaluate(samplesPerArm: 24).verdict.isInconclusive)
-        XCTAssertEqual(GateScenario.equivalent.evaluate(samplesPerArm: 1200).verdict, .pass)
+        XCTAssertEqual(GateScenario.equivalent.evaluate(samplesPerArm: 3000).verdict, .pass)
+    }
+
+    /// Every scenario, at the sample size the demo app actually opens on.
+    ///
+    /// This exists because a reviewer's first impression is formed here and
+    /// nowhere else. The specific failure being guarded against: an earlier
+    /// build returned PASS for `sliceOnlyRegression` at the default n, so
+    /// someone who opened the app, picked "One slice collapsed" and touched
+    /// nothing got a green merge on a build where a locale had dropped 30
+    /// points — the exact opposite of the scenario's own description.
+    func testNoScenarioShowsAWrongVerdictAtTheDemoDefaultSampleSize() {
+        let demoDefault = 120
+        for scenario in GateScenario.allCases {
+            let verdict = scenario.evaluate(samplesPerArm: demoDefault).verdict
+            XCTAssertFalse(
+                verdict.allowsMerge,
+                "\(scenario.rawValue) certifies a merge at the demo's default n=\(demoDefault)"
+            )
+        }
+    }
+
+    /// The demo's headline: the default view opens on a genuine regression that
+    /// the evidence at that sample size cannot yet establish.
+    func testDemoDefaultStateIsInconclusiveOnARealRegression() throws {
+        let report = GateScenario.realRegression.evaluate(samplesPerArm: 120)
+        guard case .inconclusive(let reason, let additional) = report.verdict else {
+            return XCTFail("expected inconclusive, got \(report.verdict)")
+        }
+        XCTAssertEqual(reason, .insufficientEvidence)
+        XCTAssertNotNil(additional, "the banner needs a sample-size number to show")
+        XCTAssertEqual(report.sliceResults.count, GateScenario.sliceIDs.count)
+        XCTAssertFalse(report.rationale.isEmpty)
+        XCTAssertNotNil(report.differenceInterval)
     }
 
     func testRealRegressionBlocksOnceThereIsEnoughEvidence() {
@@ -31,16 +64,67 @@ final class GateScenarioTests: XCTestCase {
         XCTAssertEqual(GateScenario.realRegression.evaluate(samplesPerArm: 1200).verdict, .block)
     }
 
+    /// Once the regression is established it must *stay* established as more
+    /// samples arrive. Non-monotone behaviour here would mean the slider is
+    /// redrawing unrelated experiments rather than extending one.
+    func testRealRegressionStaysBlockedAsSamplesGrow() {
+        var sampleSize = 1_200
+        while sampleSize <= 6_000 {
+            XCTAssertEqual(GateScenario.realRegression.evaluate(samplesPerArm: sampleSize).verdict, .block,
+                           "regression became undetectable again at n=\(sampleSize)")
+            sampleSize += 600
+        }
+    }
+
+    /// The 2-point wobble sits inside the margin, so no sample size should ever
+    /// turn it into a block. This sweeps every slider stop rather than probing
+    /// one convenient value — an earlier build blocked at 23 of them.
+    func testTheWobbleScenarioNeverBlocksAtAnySliderPosition() {
+        var sampleSize = 24
+        var blocked: [Int] = []
+        while sampleSize <= 6_000 {
+            if GateScenario.noiseNotRegression.evaluate(samplesPerArm: sampleSize).verdict.isBlock {
+                blocked.append(sampleSize)
+            }
+            sampleSize += 12
+        }
+        XCTAssertTrue(blocked.isEmpty, "blocked a within-margin build at n = \(blocked)")
+    }
+
     /// The aggregate stays inside the margin while `de-DE` collapses. Only the
     /// per-slice family can see it.
+    func testSliceCollapseNeverCertifiesAMergeAtAnySliderPosition() {
+        var sampleSize = 24
+        var passed: [Int] = []
+        while sampleSize <= 6_000 {
+            if GateScenario.sliceOnlyRegression.evaluate(samplesPerArm: sampleSize).verdict.allowsMerge {
+                passed.append(sampleSize)
+            }
+            sampleSize += 12
+        }
+        XCTAssertTrue(passed.isEmpty, "certified a collapsed-slice build at n = \(passed)")
+    }
+
     func testSliceCollapseIsCaughtBySliceTestingNotTheAggregate() throws {
-        let report = GateScenario.sliceOnlyRegression.evaluate(samplesPerArm: 1200)
+        // n=3000, chosen because at that size the aggregate interval sits
+        // *entirely above* the margin — so the aggregate alone would have
+        // returned PASS, and the block provably comes from the slice family.
+        // At smaller n the aggregate is merely inconclusive, which would make
+        // the claim weaker than the test's name.
+        let report = GateScenario.sliceOnlyRegression.evaluate(samplesPerArm: 3000)
         XCTAssertEqual(report.verdict, .block)
         XCTAssertEqual(report.sliceResults.filter(\.isRegression).map(\.sliceID), ["de-DE"])
 
+        // The assertion has to be the one that actually establishes the claim:
+        // the aggregate on its own would NOT have blocked, because its interval
+        // sits entirely above the non-inferiority margin. `upperBound > 0` was
+        // the earlier, weaker version of this check — it is satisfied by an
+        // implementation hardwired to return `.block`, so it proved nothing.
         let difference = try XCTUnwrap(report.differenceInterval)
-        XCTAssertGreaterThan(difference.upperBound, 0,
-                             "aggregate interval still includes zero — the block came from the slice family")
+        let margin = GatePolicy.standard.nonInferiorityMargin
+        XCTAssertGreaterThan(difference.lowerBound, -margin,
+                             "aggregate alone would have passed — so the block came from the slice family")
+        XCTAssertTrue(difference.contains(0), "aggregate interval still straddles zero")
     }
 
     /// Judge failures short-circuit before any sample size can rescue them.

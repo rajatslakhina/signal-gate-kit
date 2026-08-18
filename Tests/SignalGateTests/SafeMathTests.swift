@@ -60,13 +60,21 @@ final class SafeMathTests: XCTestCase {
         XCTAssertEqual(SafeMath.sqrtClampingNegative(-1e-18), 0)
         XCTAssertEqual(SafeMath.sqrtClampingNegative(0), 0)
         XCTAssertEqual(SafeMath.sqrtClampingNegative(9), 3, accuracy: 1e-12)
-        XCTAssertFalse(SafeMath.sqrtClampingNegative(.nan).isNaN)
+        // Exact values, not merely "not NaN" — the weaker assertion is also
+        // satisfied by a function returning infinity or a negative number.
+        XCTAssertEqual(SafeMath.sqrtClampingNegative(.nan), 0)
+        XCTAssertEqual(SafeMath.sqrtClampingNegative(-.infinity), 0,
+                       "sqrt of -infinity is not a real number; must not become +infinity")
+        XCTAssertEqual(SafeMath.sqrtClampingNegative(.infinity), .infinity)
     }
 
     func testLogNeverReturnsNegativeInfinity() {
         XCTAssertTrue(SafeMath.logClampingNonPositive(0).isFinite)
         XCTAssertTrue(SafeMath.logClampingNonPositive(-5).isFinite)
         XCTAssertEqual(SafeMath.logClampingNonPositive(1), 0, accuracy: 1e-12)
+        XCTAssertEqual(SafeMath.logClampingNonPositive(-.infinity), 0,
+                       "log of -infinity is undefined; must not become +infinity")
+        XCTAssertEqual(SafeMath.logClampingNonPositive(.nan), 0)
     }
 
     func testBoundsCheckedElementAccess() {

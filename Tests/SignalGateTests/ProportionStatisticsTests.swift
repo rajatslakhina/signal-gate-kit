@@ -106,6 +106,29 @@ final class ProportionStatisticsTests: XCTestCase {
         }
     }
 
+    /// Pins the cost-of-peeking figure both READMEs quote. An earlier version
+    /// claimed 1.5-1.7x, which was simply wrong at every pass rate — the kind
+    /// of number that survives review because nobody re-measures prose.
+    func testConfidenceSequenceCostMatchesTheDocumentedRatio() throws {
+        var ratios: [Double] = []
+        for passed in [20, 32, 35] {
+            let wilson = try XCTUnwrap(ProportionStatistics.wilsonInterval(passed: passed, total: 40))
+            let sequence = try XCTUnwrap(ProportionStatistics.confidenceSequence(passed: passed, total: 40))
+            let ratio = sequence.width / wilson.width
+            ratios.append(ratio)
+            XCTAssertGreaterThan(ratio, 2.2, "documented as ~2.4x at n=40 (p-hat \(passed)/40)")
+            XCTAssertLessThan(ratio, 2.7, "documented as ~2.4x at n=40 (p-hat \(passed)/40)")
+        }
+        XCTAssertEqual(ratios.count, 3)
+
+        // And roughly 4x at the p-hat = 1 boundary, where Wilson is narrowest.
+        let boundaryWilson = try XCTUnwrap(ProportionStatistics.wilsonInterval(passed: 40, total: 40))
+        let boundarySequence = try XCTUnwrap(ProportionStatistics.confidenceSequence(passed: 40, total: 40))
+        let boundaryRatio = boundarySequence.width / boundaryWilson.width
+        XCTAssertGreaterThan(boundaryRatio, 3.5)
+        XCTAssertLessThan(boundaryRatio, 4.8)
+    }
+
     func testConfidenceSequenceStaysBoundedAndRejectsBadInput() {
         guard let sequence = ProportionStatistics.confidenceSequence(passed: 5, total: 5) else {
             return XCTFail("nil sequence")
