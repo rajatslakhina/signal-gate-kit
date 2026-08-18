@@ -106,9 +106,29 @@ final class EvalBudgetTests: XCTestCase {
         }
 
         let state = await ledger.state()
-        XCTAssertLessThanOrEqual(granted, 10, "more charges were granted than the ceiling allows")
+        // Exactly 10, not "at most 10": the weaker bound is also satisfied by a
+        // ledger that grants one charge and refuses the other 199, which would
+        // be just as broken in the opposite direction.
+        XCTAssertEqual(granted, 10, "expected exactly 10 charges of 0.10 against a 1.00 ceiling")
         XCTAssertLessThanOrEqual(state.spentUSD, 1.0 + 1e-9, "budget overrun: \(state.spentUSD)")
-        XCTAssertGreaterThan(granted, 0, "no charge was granted at all — the ledger is refusing everything")
+    }
+
+    /// `chargeIfAffordable` must honour the *call* ceiling too, not just spend
+    /// and wall-clock. The check hardcoded a call count of 1 while `charge`
+    /// committed whatever the caller passed, so a 500-call charge sailed past a
+    /// ceiling of 2 — a cost cap that does not cap.
+    func testChargeIfAffordableHonoursTheInferenceCallCeiling() async throws {
+        let ledger = EvalBudgetLedger(policy: try makePolicy(spend: 1000, seconds: 1000, calls: 2))
+        let refused = await ledger.chargeIfAffordable(costUSD: 0.01, latencySeconds: 0.01, calls: 500)
+        XCTAssertNil(refused, "500 calls must not be approved against a ceiling of 2")
+
+        let state = await ledger.state()
+        XCTAssertEqual(state.inferenceCalls, 0, "a refused charge must not commit any calls")
+
+        let accepted = await ledger.chargeIfAffordable(costUSD: 0.01, latencySeconds: 0.01, calls: 2)
+        XCTAssertNotNil(accepted)
+        let after = await ledger.state()
+        XCTAssertEqual(after.inferenceCalls, 2)
     }
 
     func testChargeIfAffordableReturnsNilWhenRefusedAndDoesNotMutate() async throws {

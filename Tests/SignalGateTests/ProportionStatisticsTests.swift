@@ -181,6 +181,34 @@ final class ProportionStatisticsTests: XCTestCase {
         XCTAssertEqual(difference?.sampleCount, 20)
     }
 
+    /// The union-bound composition must equal the rectangle projection of two
+    /// arms built at `1 - a/2`: `[candLower - baseUpper, candUpper - baseLower]`.
+    ///
+    /// Without this, any mutation of the `.unionBound` branch — wrong arm level,
+    /// or RSS radii instead of linear — passes the whole suite, because the only
+    /// other test touching it merely asserts sequential mode is *wider*, which
+    /// is true of the buggy version too.
+    func testUnionBoundCompositionEqualsTheRectangleProjection() throws {
+        let baseline = try XCTUnwrap(SliceCounts(sliceID: "s", passed: 176, total: 200))
+        let candidate = try XCTUnwrap(SliceCounts(sliceID: "s", passed: 168, total: 200))
+        let confidence = 0.975
+        let armConfidence = 1 - (1 - confidence) / 2
+
+        let union = try XCTUnwrap(ProportionStatistics.differenceInterval(
+            baseline: baseline, candidate: candidate, confidence: confidence, composition: .unionBound))
+        let baseArm = try XCTUnwrap(ProportionStatistics.wilsonInterval(
+            passed: 176, total: 200, confidence: armConfidence))
+        let candArm = try XCTUnwrap(ProportionStatistics.wilsonInterval(
+            passed: 168, total: 200, confidence: armConfidence))
+
+        XCTAssertEqual(union.lowerBound, candArm.lowerBound - baseArm.upperBound, accuracy: 1e-12)
+        XCTAssertEqual(union.upperBound, candArm.upperBound - baseArm.lowerBound, accuracy: 1e-12)
+
+        let newcombe = try XCTUnwrap(ProportionStatistics.differenceInterval(
+            baseline: baseline, candidate: candidate, confidence: confidence, composition: .newcombe))
+        XCTAssertGreaterThan(union.width, newcombe.width)
+    }
+
     // MARK: - Regression p-value
 
     func testRegressionPValueIsSmallForALargeDropAndLargeForNone() {

@@ -292,6 +292,49 @@ final class QualityGateTests: XCTestCase {
                        "the reported interval is built at the split level, not the run level")
     }
 
+    /// A slice that has completely collapsed makes its own test undefined —
+    /// both arms sit at a boundary, so the standard error is exactly zero.
+    ///
+    /// The gate used to `continue` past it: never tested, never reported, no
+    /// effect on the verdict. So a build where an entire locale went from 100%
+    /// to 0% returned `.pass`, provided the aggregate stayed inside the margin.
+    /// That is the exact failure this package exists to prevent, and it was
+    /// reintroduced by a single `continue`.
+    func testATotallyCollapsedSliceIsNeverSilentlyDropped() throws {
+        var baseline: [EvalSample] = []
+        var candidate: [EvalSample] = []
+        for sliceID in ["en-US", "de-DE", "ja-JP"] {
+            baseline += samples(sliceID, passed: 190, total: 200, prefix: "b")
+            candidate += samples(sliceID, passed: 192, total: 200, prefix: "c")
+        }
+        // The collapsed slice: 200/200 -> 0/200.
+        baseline += samples("ar-EG", passed: 200, total: 200, prefix: "b")
+        candidate += samples("ar-EG", passed: 0, total: 200, prefix: "c")
+
+        let report = QualityGate.evaluate(baseline: baseline, candidate: candidate, judgeMatrix: goodJudge)
+
+        XCTAssertFalse(report.verdict.allowsMerge,
+                       "a build with a fully collapsed slice must never be certified")
+        XCTAssertTrue(report.discardedSlices.contains("ar-EG"),
+                      "the untestable slice must be surfaced, not dropped: \(report.discardedSlices)")
+        XCTAssertTrue(report.rationale.contains { $0.contains("ar-EG") },
+                      "the rationale must name the slice it could not test")
+    }
+
+    /// The benign degenerate case — both arms genuinely identical at a boundary
+    /// — must also be surfaced rather than passed over, but it is worth pinning
+    /// separately so the two are not conflated.
+    func testAnIdenticalBoundarySliceIsAlsoSurfaced() throws {
+        var baseline = samples("en-US", passed: 190, total: 200, prefix: "b")
+        var candidate = samples("en-US", passed: 192, total: 200, prefix: "c")
+        baseline += samples("perfect", passed: 100, total: 100, prefix: "b")
+        candidate += samples("perfect", passed: 100, total: 100, prefix: "c")
+
+        let report = QualityGate.evaluate(baseline: baseline, candidate: candidate, judgeMatrix: goodJudge)
+        XCTAssertTrue(report.discardedSlices.contains("perfect"))
+        XCTAssertFalse(report.verdict.allowsMerge)
+    }
+
     func testReportIsCodableRoundTrip() throws {
         let baseline = samples("en-US", passed: 176, total: 200, prefix: "b")
         let candidate = samples("en-US", passed: 150, total: 200, prefix: "c")
