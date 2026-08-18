@@ -54,7 +54,9 @@ This is not a hypothetical. It is the default behaviour of every per-slice quali
 
 The gate blocks if **either** the per-slice family fires **or** the overall non-inferiority test fires. Those are two hypothesis families. Running each at the full run-level α puts the true false-block rate near their union — which is exactly the bug §2 exists to eliminate, reproduced at the level above it.
 
-An earlier build of this package had precisely that flaw, and its footprint was measurable: on the "2-point wobble" scenario — a build the package itself defines as a non-regression — it blocked at 23 of 499 reachable sample sizes. The run-level budget is now split evenly across the two families (`GatePolicy.overallAlpha`, `GatePolicy.sliceQ`), and `testTheWobbleScenarioNeverBlocksAtAnySliderPosition` sweeps every one of those sample sizes to keep it fixed.
+An earlier build of this package had precisely that flaw, and its footprint was measurable: on the "2-point wobble" scenario — a build the package itself defines as a non-regression — it blocked at 23 of 499 reachable sample sizes. Each family now runs at **half** its configured level (`GatePolicy.overallAlpha`, `GatePolicy.sliceQ`), and `testTheWobbleScenarioNeverBlocksAtAnySliderPosition` sweeps every one of those sample sizes to keep it fixed: it now blocks at zero of them.
+
+One nuance the package is careful not to paper over. `confidence` and `sliceFalseDiscoveryRate` are independent knobs, so the two halves sum to the run-level α only when they happen to be configured equal — as the default policy is. The honest guarantee is therefore `GatePolicy.unionFalseBlockBound`, which the gate computes and writes into its own rationale. At `confidence: 0.99, sliceFalseDiscoveryRate: 0.10` that bound is 0.055, not the 0.01 the confidence level alone would suggest, and the gate says 0.055.
 
 ### 4. Nobody calibrates the judge, and an uncalibrated judge fails safe-looking.
 
@@ -71,9 +73,9 @@ Judge calibration is a **precondition** here, evaluated before any pass-rate ari
 | **Wilson score interval** | Wald (`p̂ ± z·√(p̂(1−p̂)/n)`) | Wald's coverage collapses exactly where eval suites live: small `n`, pass rates near 1. At `p̂ = 1.0` it produces a **zero-width** interval — "95% confident the rate is exactly 100%," from 20 samples — and at `p̂ = 0.95` its upper bound exceeds 1. Both pathologies are asserted in `NegativeControlTests`. |
 | **Non-inferiority test against `baseline − margin`** | Equality test against `baseline` | An equality test's power grows without bound in `n`. Run a big enough suite and a half-point drift becomes "significant," so the gate blocks every merge. Shifting the null by a declared margin asks the question the business actually has, and its answer stays stable as `n` grows. |
 | **Benjamini–Hochberg (FDR)** | Bonferroni (FWER) | Bonferroni on 12 slices tests each at α/12 ≈ 0.004 — so conservative that a real regression confined to one slice will essentially never be caught at realistic sample sizes. FDR bounds the expected *proportion* of blocked slices that are false alarms, which is what an engineer triaging a red gate actually wants to know. |
-| **Run-level α split evenly across the two families** | Running both at the full α | Either family firing blocks the merge, so their errors compound. The split costs real power — a halved α widens the interval and raises the per-slice bar — but the alternative is a gate whose advertised 5% false-block rate is nearer 10%. |
+| **Each family run at half its configured level** | Running both at the full level | Either family firing blocks the merge, so their errors compound. The split costs real power — a halved level widens the interval and raises the per-slice bar — but the alternative is a gate whose advertised 5% false-block rate is nearer 10%. `unionFalseBlockBound` reports the true combined figure rather than the flattering one. |
 | **Anytime-valid confidence sequence** for sequential mode | Reusing Wilson while peeking | If you re-check the gate as samples stream in and stop when it looks decided, fixed-`n` intervals are invalid — optional stopping drives the true error rate toward 1. The sequence splits the error budget as `αₙ = α/(n(n+1))`, which telescopes to exactly `α`. It costs about **2.4×** the width at n=40, and roughly **4×** at the `p̂ = 1` boundary; that width **is** the price of being allowed to peek, made explicit. |
-| **Union bound when composing the two arms** | Newcombe alone in sequential mode | Newcombe's square-root-of-sum-of-squares is an empirical calibration derived *for Wilson intervals*. It is not a theorem that transfers to a Hoeffding sequence. So `differenceInterval` takes a separate `perArmConfidence`, and the gate builds each arm at `α/2` so the pair is jointly valid at `α` by a bound that actually holds. |
+| **Union bound when composing sequence arms** | Newcombe everywhere | Newcombe's root-sum-of-squares is an empirical calibration derived *for Wilson intervals*; it is not a theorem that transfers to a Hoeffding sequence. So `differenceInterval` takes a `composition`: `.newcombe` for Wilson arms at the target level, `.unionBound` for anything else — arms at `1 − α/2` combined with **linear** radii, which is what the union bound actually justifies. An earlier version inflated the arms for a union bound and then composed with RSS, which is wider than Newcombe *and* narrower than the bound it cited: anti-conservative relative to its own derivation. |
 | **Nested scenario draws** | Re-seeding per sample size | With a shared generator whose position depends on `n`, every slice past the first shifts phase when `n` changes, so consecutive sample sizes draw unrelated datasets and the verdict flickers as it grows. Nesting makes "more samples" mean more samples. |
 | **Budget checked only at the straddle** | Checking budget up front | "We ran out of money" is only a reason to stop if more samples would have helped. An exhausted budget must not downgrade an already-decisive `block`. |
 | **`EvalBudgetLedger` has no `await` in any method** | Async pricing lookup inside `charge` | An actor guarantees exclusivity only *between* suspension points. An `await` mid-update lets two tasks each read spend at 0.95 of the cap, each suspend, and each commit — ending at 1.9× budget with both callers told they were within it. Keeping the read-modify-write synchronous makes that unrepresentable. |
@@ -86,12 +88,12 @@ Judge calibration is a **precondition** here, evaluated before any pass-rate ari
 
 - `QualityGate` — the orchestrator. Preconditions (samples → judge → slice comparability, checked in both directions), then the per-slice FDR family, then the overall non-inferiority decision.
 - `GateVerdict` — `.pass` / `.block` / `.inconclusive(reason:additionalSamplesNeeded:)`, with six distinct `InconclusiveReason`s that map to different operational responses.
-- `GatePolicy` — margin, confidence, FDR, power, mode, judge thresholds, plus the derived error-budget allocation (`overallAlpha`, `sliceQ`, `perArmConfidence`).
+- `GatePolicy` — margin, confidence, FDR, power, mode, judge thresholds, plus the derived error-budget allocation (`overallAlpha`, `sliceQ`) and the honest combined figure, `unionFalseBlockBound`.
 - `ProportionStatistics` — Wilson intervals, anytime-valid confidence sequences, Newcombe difference intervals, margin-aware two-proportion tests, and power-based sample-size planning.
 - `MultipleComparisons` — Benjamini–Hochberg with monotonised adjusted p-values, plus `familyWiseErrorRate` so the argument for correcting can be computed rather than argued.
 - `JudgeCalibration` / `AgreementMatrix` — Cohen's κ, leniency bias, and a policy that gates on both.
-- `EvalBudgetLedger` — an actor tracking spend, wall-clock and call count, with non-finite readings rejected rather than accumulated.
-- `SafeMath` — the trapping operations this package touches, wrapped: `Int(Double)`, division by zero, `Int.min / -1`, `+`/`*` overflow, `sqrt` of a negative, `log` of zero.
+- `EvalBudgetLedger` — an actor tracking spend, wall-clock and call count, with non-finite readings rejected rather than accumulated. Use `chargeIfAffordable`, which checks and commits in **one** actor call; `canAfford` followed by `charge` is two calls with a suspension point between them and can genuinely overrun.
+- `SafeMath` — the trapping Swift operations, wrapped: `Int(Double)`, division by zero, `Int.min / -1`, `+`/`*` overflow, `sqrt` of a negative, `log` of zero. Not all of these are reachable from this package's own code; the `Int.min / -1` and saturating-multiply guards are there for callers.
 - `GateScenario` — six reproducible, nested fixtures, seeded by a SplitMix64 with hand-written per-case offsets.
 
 **`SignalGateUI`** — SwiftUI console, entirely behind `#if canImport(SwiftUI)` so the package still builds on Linux.
@@ -102,15 +104,15 @@ Judge calibration is a **precondition** here, evaluated before any pass-rate ari
 
 A merge gate runs unattended, and its inputs are pass rates computed upstream from model output. Those inputs *will* eventually contain a `NaN` from an empty slice, an infinity from a runaway latency measurement, or a value outside `Int`'s range. In Swift, `Int(someDouble)` traps on all three. A trap in a merge gate is not a failed test — it is an outage in everyone's pipeline.
 
-So: no force-unwraps anywhere in `Sources/`, every collection access bounds-checked through `SafeMath.element`, division guarded, `sqrt` clamped against the few-ulp-negative results that catastrophic cancellation produces in variance expressions, and the `Int` range derived from `Int.max` rather than a hardcoded 64-bit literal — because `Int` is 32-bit on watchOS.
+So: no force-unwraps anywhere in `Sources/`, collection reads bounds-checked through `SafeMath.element`, floating-point division guarded, `sqrt` clamped against the few-ulp-negative results that catastrophic cancellation produces in variance expressions, and the `Int` range derived from `Int.max` rather than a hardcoded 64-bit literal — because `Int` is 32-bit on watchOS.
 
-Two honest caveats, since the point of this section is precision: the one integer division in the package (`perArm / sliceCount` in `GateScenario`) is a raw `/`, safe because `sliceCount` is `max(1, …)` by construction; and `SplitMix64`'s `&*`/`&+` are unchecked because modular arithmetic *is* the algorithm there, not an overflow being tolerated.
+Since the point of this section is precision, the exceptions are worth naming rather than glossing. `GateScenario` uses raw `/` and `%` on `perArm / sliceCount`, safe because `sliceCount` is `max(1, …)` by construction. `MultipleComparisons` writes one array element through a direct subscript with an inline bounds check rather than through `SafeMath`. `GateConsoleView` does one `Int(Double)` inside `SafeSampleCount`, which guards `isFinite` and the range first. And `SplitMix64`'s `&*`/`&+` are unchecked because modular arithmetic *is* the algorithm there, not an overflow being tolerated.
 
 ---
 
 ## On the tests
 
-**105 tests.** A meaningful share of them implement the *wrong* thing on purpose.
+**108 tests.** A meaningful share of them implement the *wrong* thing on purpose.
 
 `NegativeControlTests` exists because a suite that only asserts the correct implementation behaves correctly is unfalsifiable — it would pass even if the property being checked were vacuous. So for each claim above, there is a test that feeds in the broken alternative and asserts it **fails**:
 
