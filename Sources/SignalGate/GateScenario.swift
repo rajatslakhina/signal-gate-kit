@@ -3,7 +3,7 @@ import Foundation
 /// Deterministic pseudo-random generator, so a scenario at a given seed and
 /// sample size produces byte-identical counts on every platform and every run.
 ///
-/// SplitMix64. The `&*`, `&+` and `&>>` operators are *wrapping on purpose* —
+/// SplitMix64. The `&*` and `&+` operators are *wrapping on purpose* —
 /// modular arithmetic is the algorithm, not an overflow being tolerated. They
 /// are the one place in this package where unchecked arithmetic is correct.
 struct SplitMix64: RandomNumberGenerator {

@@ -110,9 +110,11 @@ public actor EvalBudgetLedger {
         latencySeconds: Double,
         calls: Int = 1
     ) -> BudgetState? {
-        guard affordabilityCheck(estimatedCostUSD: costUSD, estimatedLatencySeconds: latencySeconds) else {
-            return nil
-        }
+        guard affordabilityCheck(
+            estimatedCostUSD: costUSD,
+            estimatedLatencySeconds: latencySeconds,
+            calls: calls
+        ) else { return nil }
         return charge(costUSD: costUSD, latencySeconds: latencySeconds, calls: calls)
     }
 
@@ -124,18 +126,27 @@ public actor EvalBudgetLedger {
     public func canAfford(estimatedCostUSD: Double, estimatedLatencySeconds: Double) -> Bool {
         affordabilityCheck(
             estimatedCostUSD: estimatedCostUSD,
-            estimatedLatencySeconds: estimatedLatencySeconds
+            estimatedLatencySeconds: estimatedLatencySeconds,
+            calls: 1
         )
     }
 
-    private func affordabilityCheck(estimatedCostUSD: Double, estimatedLatencySeconds: Double) -> Bool {
+    /// `calls` is a parameter rather than a hardcoded 1 because `charge` accepts
+    /// a call count: hardcoding it meant `chargeIfAffordable(calls: 500)` was
+    /// approved against a ceiling of 2 and then committed all 500 — a cost cap
+    /// that does not cap.
+    private func affordabilityCheck(
+        estimatedCostUSD: Double,
+        estimatedLatencySeconds: Double,
+        calls: Int
+    ) -> Bool {
         guard !currentState().isExhausted else { return false }
         let projectedSpend = spentUSD + (estimatedCostUSD.isFinite && estimatedCostUSD > 0 ? estimatedCostUSD : 0)
         let projectedTime = elapsedSeconds
             + (estimatedLatencySeconds.isFinite && estimatedLatencySeconds > 0 ? estimatedLatencySeconds : 0)
         return projectedSpend <= policy.maximumSpendUSD
             && projectedTime <= policy.maximumWallClockSeconds
-            && SafeMath.add(inferenceCalls, 1) <= policy.maximumInferenceCalls
+            && SafeMath.add(inferenceCalls, Swift.max(1, calls)) <= policy.maximumInferenceCalls
     }
 
     private func currentState() -> BudgetState {

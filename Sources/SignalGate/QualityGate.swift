@@ -264,6 +264,18 @@ public enum QualityGate {
             uniquingKeysWith: { first, _ in first }
         )
         var sliceTests: [SliceTest] = []
+        // Slices whose test is undefined. These must be surfaced, not skipped.
+        //
+        // `regressionPValue` returns nil when the standard error is exactly
+        // zero — which happens when BOTH arms sit at a boundary. The benign
+        // case is 200/200 -> 200/200. The malignant one is **200/200 -> 0/200**:
+        // a slice that has completely collapsed. Dropping it from the family
+        // meant it was never tested, never reported, and did not affect the
+        // verdict, so a build where an entire locale went to zero could return
+        // `.pass` as long as the aggregate stayed inside the margin. That is
+        // the precise failure this package exists to prevent, reintroduced by a
+        // `continue`.
+        var untestableSlices: [String] = []
         for baselineSlice in baselineSlices {
             guard let candidateSlice = candidateBySliceID[baselineSlice.sliceID] else { continue }
             // Same margin as the overall test. A slice family tested at
@@ -274,7 +286,10 @@ public enum QualityGate {
                 baseline: baselineSlice,
                 candidate: candidateSlice,
                 nonInferiorityMargin: policy.nonInferiorityMargin
-            ) else { continue }
+            ) else {
+                untestableSlices.append(baselineSlice.sliceID)
+                continue
+            }
             sliceTests.append(
                 SliceTest(
                     sliceID: baselineSlice.sliceID,
@@ -288,6 +303,7 @@ public enum QualityGate {
         let corrected = MultipleComparisons.benjaminiHochberg(
             tests: sliceTests, falseDiscoveryRate: policy.sliceQ
         )
+        let discarded = (corrected.discarded + untestableSlices).sorted()
         let sliceResults = corrected.results
         let regressedSlices = sliceResults.filter(\.isRegression)
         let uncorrectedCount = MultipleComparisons
@@ -329,6 +345,28 @@ public enum QualityGate {
             componentInterval: componentInterval
         )
 
+        // 5b. An untestable slice is a refusal to certify, not a pass.
+        //
+        // Checked before the aggregate decision, for the same reason the judge
+        // is: a slice whose test is undefined is not weak evidence, it is no
+        // evidence, and no amount of healthy aggregate makes up for not having
+        // looked.
+        if !untestableSlices.isEmpty {
+            rationale.append(
+                "Cannot certify: \(untestableSlices.count) slice(s) have an undefined test because both arms "
+                    + "sit at a boundary — " + untestableSlices.sorted().joined(separator: ", ")
+                    + ". A fully collapsed slice lands here, so this is never treated as 'no regression'."
+            )
+            return report(
+                .inconclusive(reason: .insufficientEvidence, additionalSamplesNeeded: nil),
+                differenceInterval: difference,
+                sliceResults: sliceResults,
+                discarded: discarded,
+                uncorrectedCount: uncorrectedCount,
+                familyWiseErrorRate: familyWiseErrorRate
+            )
+        }
+
         // 6. A slice regression blocks regardless of the overall number. This
         //    is the whole reason slices exist: an aggregate can hold steady
         //    while one locale, tier or device class falls off a cliff, and the
@@ -340,7 +378,7 @@ public enum QualityGate {
                 .block,
                 differenceInterval: difference,
                 sliceResults: sliceResults,
-                discarded: corrected.discarded,
+                discarded: discarded,
                 uncorrectedCount: uncorrectedCount,
                 familyWiseErrorRate: familyWiseErrorRate
             )
@@ -351,7 +389,7 @@ public enum QualityGate {
             return report(
                 .inconclusive(reason: .insufficientEvidence, additionalSamplesNeeded: nil),
                 sliceResults: sliceResults,
-                discarded: corrected.discarded,
+                discarded: discarded,
                 uncorrectedCount: uncorrectedCount,
                 familyWiseErrorRate: familyWiseErrorRate
             )
@@ -374,7 +412,7 @@ public enum QualityGate {
                 .pass,
                 differenceInterval: difference,
                 sliceResults: sliceResults,
-                discarded: corrected.discarded,
+                discarded: discarded,
                 uncorrectedCount: uncorrectedCount,
                 familyWiseErrorRate: familyWiseErrorRate
             )
@@ -386,7 +424,7 @@ public enum QualityGate {
                 .block,
                 differenceInterval: difference,
                 sliceResults: sliceResults,
-                discarded: corrected.discarded,
+                discarded: discarded,
                 uncorrectedCount: uncorrectedCount,
                 familyWiseErrorRate: familyWiseErrorRate
             )
@@ -409,7 +447,7 @@ public enum QualityGate {
                 .inconclusive(reason: .budgetExhausted, additionalSamplesNeeded: nil),
                 differenceInterval: difference,
                 sliceResults: sliceResults,
-                discarded: corrected.discarded,
+                discarded: discarded,
                 uncorrectedCount: uncorrectedCount,
                 familyWiseErrorRate: familyWiseErrorRate
             )
@@ -453,7 +491,7 @@ public enum QualityGate {
             .inconclusive(reason: .insufficientEvidence, additionalSamplesNeeded: additional),
             differenceInterval: difference,
             sliceResults: sliceResults,
-            discarded: corrected.discarded,
+            discarded: discarded,
             uncorrectedCount: uncorrectedCount,
             familyWiseErrorRate: familyWiseErrorRate
         )
