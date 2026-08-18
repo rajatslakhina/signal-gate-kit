@@ -52,12 +52,21 @@ public struct GateConsoleView: View {
         Swift.min(6000, Swift.max(24, SafeSampleCount.from(samplesPerArm)))
     }
 
-    private var report: GateReport {
+    private func makeReport() -> GateReport {
         scenario.evaluate(samplesPerArm: sampleCount, policy: effectivePolicy)
     }
 
     public var body: some View {
-        NavigationStack {
+        // Bound once per body pass, deliberately.
+        //
+        // As a computed property this was evaluated at each of the eight use
+        // sites below, and every evaluation allocates two arms of samples,
+        // tallies them, runs a z-test per slice, sorts for Benjamini-Hochberg
+        // and builds two intervals. Eight of those per render, on every drag
+        // tick of the slider, is precisely the interaction this demo is built
+        // to show off.
+        let report = makeReport()
+        return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VerdictBanner(report: report)
@@ -118,7 +127,9 @@ public struct GateConsoleView: View {
             .pickerStyle(.segmented)
 
             Text(mode == .sequential
-                 ? "Anytime-valid interval: you may stop as soon as it decides, and pay for that in width."
+                 ? "Anytime-valid: you may stop as soon as it decides. It costs roughly 2.4x the width at "
+                   + "n=40, so within this slider's range it will usually stay inconclusive - that is the "
+                   + "price of peeking, not a bug."
                  : "Fixed-sample interval: tightest correct choice, valid only if you look exactly once.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -212,12 +223,26 @@ struct IntervalStrip: View {
     let interval: ProportionInterval
     let margin: Double
 
-    private let span = 0.30
+    /// Half-width of the drawn axis, scaled to fit the interval it is given.
+    ///
+    /// A fixed span silently clipped wide intervals — and wide is exactly what
+    /// a small-sample or sequential-mode interval is. A clipped bar runs into
+    /// the wall and reads as decisive when the whole point is that it is not,
+    /// which inverts the meaning of the one visual carrying the argument.
+    private var span: Double {
+        let needed = Swift.max(
+            Swift.max(abs(interval.lowerBound), abs(interval.upperBound)),
+            margin * 2
+        )
+        guard needed.isFinite, needed > 0 else { return 0.30 }
+        return Swift.min(1.05, needed * 1.15)
+    }
 
     private func position(_ value: Double, width: CGFloat) -> CGFloat {
-        guard value.isFinite, width.isFinite, width > 0 else { return 0 }
-        let clamped = Swift.min(span, Swift.max(-span, value))
-        let fraction = (clamped + span) / (2 * span)
+        let axis = span
+        guard value.isFinite, width.isFinite, width > 0, axis > 0 else { return 0 }
+        let clamped = Swift.min(axis, Swift.max(-axis, value))
+        let fraction = (clamped + axis) / (2 * axis)
         return width * CGFloat(fraction)
     }
 
