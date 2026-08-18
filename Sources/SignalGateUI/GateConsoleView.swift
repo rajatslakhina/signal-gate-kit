@@ -128,8 +128,8 @@ public struct GateConsoleView: View {
 
             Text(mode == .sequential
                  ? "Anytime-valid: you may stop as soon as it decides. It costs roughly 2.4x the width at "
-                   + "n=40, so within this slider's range it will usually stay inconclusive - that is the "
-                   + "price of peeking, not a bug."
+                   + "n=40, and never reaches PASS anywhere in this slider's range - that is the price of "
+                   + "peeking, not a bug."
                  : "Fixed-sample interval: tightest correct choice, valid only if you look exactly once.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -204,7 +204,10 @@ struct VerdictBanner: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if !report.verdict.allowsMerge {
+            // Only on `.inconclusive`. On a block there is no ambiguity for a
+            // two-state gate to launder — it would pick block and be right —
+            // so showing this line there garbles the argument.
+            if report.verdict.isInconclusive {
                 Text("A two-state gate would have had to pick pass or block here.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
