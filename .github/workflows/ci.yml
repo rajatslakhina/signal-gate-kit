@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux · build + test
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      # A clean build, so "zero warnings" is a fact about a full compile rather
+      # than about an up-to-date tree that compiled nothing.
+      - name: Clean
+        run: rm -rf .build
+
+      # -warnings-as-errors makes the no-warnings claim machine-enforced.
+      # Only the core module compiles here; SignalGateUI is behind
+      # `#if canImport(SwiftUI)` and resolves to an empty binary on Linux.
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
+
+  macos:
+    name: macOS · build + test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Clean
+        run: rm -rf .build
+
+      # This job is what actually compiles SignalGateUI: SwiftUI is available
+      # here, so the view code is type-checked rather than skipped. Compilation
+      # of that same UI target *for iOS Simulator* is covered by the demo app's
+      # CI, which builds an app against this package.
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
