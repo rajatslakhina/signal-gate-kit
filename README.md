@@ -140,7 +140,7 @@ iOS 17+ / macOS 14+, Swift 6.0+.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/signal-gate-kit.git", from: "1.1.0")
+.package(url: "https://github.com/rajatslakhina/signal-gate-kit.git", from: "1.2.0")
 ```
 
 ## Demo app
