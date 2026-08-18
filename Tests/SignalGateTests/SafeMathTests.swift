@@ -93,10 +93,20 @@ final class SafeMathTests: XCTestCase {
         XCTAssertEqual(SafeMath.clampProbability(0.4), 0.4)
     }
 
-    /// The `Int` range constants must be derived from `Int.max`/`Int.min`, not
-    /// hardcoded 64-bit literals — `Int` is 32-bit on watchOS.
+    /// The `Int` range constants must track the platform's actual `Int` width.
+    ///
+    /// Asserting `intUpperBoundAsDouble == Double(Int.max)` alone would be
+    /// tautological: a hardcoded `9.223372036854775807e18` parses to the same
+    /// `Double` on 64-bit, so that assertion passes against exactly the bug it
+    /// claims to catch. Tying the expected magnitude to `MemoryLayout<Int>.size`
+    /// is what makes it fail on a 32-bit platform with a hardcoded 64-bit value.
     func testIntBoundsTrackTheActualPlatformIntWidth() {
         XCTAssertEqual(SafeMath.intUpperBoundAsDouble, Double(Int.max))
         XCTAssertEqual(SafeMath.intLowerBoundAsDouble, Double(Int.min))
+
+        let expectedMagnitude = pow(2.0, Double(MemoryLayout<Int>.size) * 8 - 1)
+        XCTAssertEqual(SafeMath.intUpperBoundAsDouble, expectedMagnitude, accuracy: expectedMagnitude * 1e-12,
+                       "upper bound must follow the platform's Int width, not a hardcoded 64-bit literal")
+        XCTAssertEqual(SafeMath.intLowerBoundAsDouble, -expectedMagnitude, accuracy: expectedMagnitude * 1e-12)
     }
 }

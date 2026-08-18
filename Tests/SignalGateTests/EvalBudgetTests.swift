@@ -85,6 +85,48 @@ final class EvalBudgetTests: XCTestCase {
         XCTAssertTrue(affordableSmallCharge)
     }
 
+    /// `canAfford` + `charge` is two actor calls with a suspension point
+    /// between them, so it can overrun. `chargeIfAffordable` cannot.
+    ///
+    /// 200 tasks each try to spend 0.10 against a 1.00 ceiling. At most ten can
+    /// succeed. The check-then-act pairing has no such guarantee; this test
+    /// asserts the atomic method does.
+    func testChargeIfAffordableCannotOverrunUnderConcurrency() async throws {
+        let ledger = EvalBudgetLedger(policy: try makePolicy(spend: 1, seconds: 1_000_000, calls: 1_000_000))
+
+        let granted = await withTaskGroup(of: Bool.self) { group -> Int in
+            for _ in 0..<200 {
+                group.addTask {
+                    await ledger.chargeIfAffordable(costUSD: 0.10, latencySeconds: 0.01) != nil
+                }
+            }
+            var count = 0
+            for await ok in group where ok { count += 1 }
+            return count
+        }
+
+        let state = await ledger.state()
+        XCTAssertLessThanOrEqual(granted, 10, "more charges were granted than the ceiling allows")
+        XCTAssertLessThanOrEqual(state.spentUSD, 1.0 + 1e-9, "budget overrun: \(state.spentUSD)")
+        XCTAssertGreaterThan(granted, 0, "no charge was granted at all — the ledger is refusing everything")
+    }
+
+    func testChargeIfAffordableReturnsNilWhenRefusedAndDoesNotMutate() async throws {
+        let ledger = EvalBudgetLedger(policy: try makePolicy(spend: 1, seconds: 100, calls: 100))
+        _ = await ledger.charge(costUSD: 0.95, latencySeconds: 1)
+
+        let refused = await ledger.chargeIfAffordable(costUSD: 0.50, latencySeconds: 1)
+        XCTAssertNil(refused, "a charge that would breach the ceiling must be refused")
+
+        let afterRefusal = await ledger.state()
+        XCTAssertEqual(afterRefusal.spentUSD, 0.95, accuracy: 1e-12, "a refused charge must not mutate the ledger")
+
+        let accepted = await ledger.chargeIfAffordable(costUSD: 0.01, latencySeconds: 1)
+        XCTAssertNotNil(accepted)
+        let afterAcceptance = await ledger.state()
+        XCTAssertEqual(afterAcceptance.spentUSD, 0.96, accuracy: 1e-12)
+    }
+
     /// A genuinely concurrent writer, not a sequential loop dressed up as one.
     ///
     /// 500 tasks charge the same ledger simultaneously. The assertion is on the

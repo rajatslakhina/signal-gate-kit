@@ -43,6 +43,13 @@ final class GateScenarioTests: XCTestCase {
                 "\(scenario.rawValue) certifies a merge at the demo's default n=\(demoDefault)"
             )
         }
+
+        // Wrong in the other direction too — a hardwired `.block` would satisfy
+        // the loop above while being just as wrong for a clean build.
+        XCTAssertFalse(GateScenario.equivalent.evaluate(samplesPerArm: demoDefault).verdict.isBlock,
+                       "an equivalent build is condemned at the demo's default n")
+        XCTAssertFalse(GateScenario.noiseNotRegression.evaluate(samplesPerArm: demoDefault).verdict.isBlock,
+                       "a within-margin build is condemned at the demo's default n")
     }
 
     /// The demo's headline: the default view opens on a genuine regression that

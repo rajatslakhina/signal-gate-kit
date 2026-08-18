@@ -237,8 +237,37 @@ final class QualityGateTests: XCTestCase {
         XCTAssertEqual(policy.sliceQ, 0.025, accuracy: 1e-12)
         XCTAssertEqual(policy.perArmConfidence, 0.9875, accuracy: 1e-12)
 
-        // The two allocations sum to the run-level budget.
+        // At the default the two halves happen to sum to the run-level budget.
         XCTAssertEqual(policy.overallAlpha + policy.sliceQ, policy.runLevelAlpha, accuracy: 1e-12)
+        XCTAssertEqual(policy.unionFalseBlockBound, policy.runLevelAlpha, accuracy: 1e-12)
+    }
+
+    /// The knobs are independent, so at a non-default policy the two halves do
+    /// NOT sum to the run-level alpha — and the package must report the larger,
+    /// true union bound rather than the flattering one.
+    ///
+    /// The default-only version of this test passed against an implementation
+    /// whose slice budget was unrelated to the run-level budget, because 0.05
+    /// and 0.05 coincide. This one does not.
+    func testUnionBoundIsReportedHonestlyAtNonDefaultPolicies() {
+        let mismatched = GatePolicy(confidence: 0.99, sliceFalseDiscoveryRate: 0.10)
+        XCTAssertEqual(mismatched.runLevelAlpha, 0.01, accuracy: 1e-12)
+        XCTAssertEqual(mismatched.overallAlpha, 0.005, accuracy: 1e-12)
+        XCTAssertEqual(mismatched.sliceQ, 0.05, accuracy: 1e-12)
+
+        // 0.055, not 0.01. Quoting the run-level alpha here would understate
+        // the real false-block rate by 5.5x.
+        XCTAssertEqual(mismatched.unionFalseBlockBound, 0.055, accuracy: 1e-12)
+        XCTAssertGreaterThan(mismatched.unionFalseBlockBound, mismatched.runLevelAlpha)
+
+        // And each family always gets exactly half its own configured budget.
+        for (confidence, fdr) in [(0.95, 0.05), (0.99, 0.10), (0.90, 0.20), (0.80, 0.01)] {
+            let policy = GatePolicy(confidence: confidence, sliceFalseDiscoveryRate: fdr)
+            XCTAssertEqual(policy.overallAlpha, (1 - confidence) / 2, accuracy: 1e-12)
+            XCTAssertEqual(policy.sliceQ, fdr / 2, accuracy: 1e-12)
+            XCTAssertEqual(policy.unionFalseBlockBound,
+                           Swift.min(1, policy.overallAlpha + policy.sliceQ), accuracy: 1e-12)
+        }
     }
 
     /// The split must reach the actual interval, not just the policy struct.

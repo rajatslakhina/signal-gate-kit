@@ -185,16 +185,26 @@ final class NegativeControlTests: XCTestCase {
     /// experiment at a different n" rather than "collect more samples", and the
     /// verdict visibly flickers as the slider moves.
     func testDrawsAreNestedSoLargerSamplesExtendSmallerOnes() {
+        // 61 and 601 are deliberately indivisible by the six slices, so the
+        // remainder-distribution path — the one that was actually buggy — is
+        // exercised for nesting rather than only for its total.
         for scenario in GateScenario.allCases {
-            let small = scenario.draw(samplesPerArm: 60)
-            let large = scenario.draw(samplesPerArm: 600)
+            let small = scenario.draw(samplesPerArm: 61)
+            let large = scenario.draw(samplesPerArm: 601)
             for sliceID in GateScenario.sliceIDs {
-                let smallSlice = small.baseline.filter { $0.sliceID == sliceID }.map(\.passed)
-                let largeSlice = large.baseline.filter { $0.sliceID == sliceID }.map(\.passed)
-                XCTAssertFalse(smallSlice.isEmpty, "\(scenario.rawValue)/\(sliceID)")
-                XCTAssertLessThanOrEqual(smallSlice.count, largeSlice.count)
-                XCTAssertEqual(Array(largeSlice.prefix(smallSlice.count)), smallSlice,
-                               "\(scenario.rawValue)/\(sliceID) is not a prefix of the larger draw")
+                // Both arms. Checking only the baseline would pass against an
+                // implementation that re-seeded between the two.
+                for (armName, smallArm, largeArm) in [
+                    ("baseline", small.baseline, large.baseline),
+                    ("candidate", small.candidate, large.candidate),
+                ] {
+                    let smallSlice = smallArm.filter { $0.sliceID == sliceID }.map(\.passed)
+                    let largeSlice = largeArm.filter { $0.sliceID == sliceID }.map(\.passed)
+                    XCTAssertFalse(smallSlice.isEmpty, "\(scenario.rawValue)/\(sliceID)/\(armName)")
+                    XCTAssertLessThanOrEqual(smallSlice.count, largeSlice.count)
+                    XCTAssertEqual(Array(largeSlice.prefix(smallSlice.count)), smallSlice,
+                                   "\(scenario.rawValue)/\(sliceID)/\(armName) is not a prefix")
+                }
             }
         }
     }
@@ -227,7 +237,7 @@ final class NegativeControlTests: XCTestCase {
             XCTAssertGreaterThan(drawn.candidate.count, 0, "size \(size)")
         }
         let huge = GateScenario.equivalent.draw(samplesPerArm: Int.max)
-        XCTAssertLessThanOrEqual(huge.baseline.count, 100_006)
+        XCTAssertEqual(huge.baseline.count, 60_000, "draw clamps at 60,000 per arm")
     }
 }
 
@@ -237,9 +247,12 @@ final class NegativeControlTests: XCTestCase {
 /// which is the classic vacuous-test shape: it would pass against any
 /// implementation, including a broken one.
 enum GoldenCounts {
-    /// `GateScenario.realRegression.draw(samplesPerArm: 60, seed: 20_260_818)`
-    /// — baseline arm, observed pass count. Baseline rate is 0.88, candidate
-    /// 0.76, so 53/60 vs 45/60 is the expected shape.
+    /// `GateScenario.realRegression.draw(samplesPerArm: 60, seed: 20_260_818)`.
+    ///
+    /// Baseline rate 0.88 and candidate rate 0.76 give expectations of 52.8 and
+    /// 45.6, so at n=60 the observed 52 and 50 are both ordinary draws — and
+    /// the fact that the observed gap (2) is so much smaller than the true gap
+    /// (7.2) is precisely why the gate reports inconclusive at this size.
     static let realRegressionBaselinePassed60 = 52
     static let realRegressionCandidatePassed60 = 50
 }
