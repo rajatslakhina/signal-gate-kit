@@ -167,8 +167,10 @@ public enum ProportionStatistics {
     /// that a reviewer can check its validity by hand — which is the right
     /// trade for something that decides whether code ships.
     ///
-    /// The price is width: roughly 1.5–1.7× a Wilson interval at n ≈ 40. That
-    /// is not a defect, it is what peeking costs, made explicit.
+    /// The price is width: about **2.4×** a Wilson interval at n = 40 for a
+    /// mid-range pass rate, and roughly **4×** at the p̂ = 1 boundary. (Measured,
+    /// not estimated — see `ProportionStatisticsTests`.) That is not a defect,
+    /// it is what peeking costs, made explicit rather than absorbed silently.
     public static func confidenceSequence(passed: Int, total: Int, confidence: Double = 0.95) -> ProportionInterval? {
         guard total > 0, passed >= 0, passed <= total else { return nil }
         guard confidence.isFinite, confidence > 0, confidence < 1 else { return nil }
@@ -213,16 +215,31 @@ public enum ProportionStatistics {
     ///
     /// `componentInterval` is injected so the same composition works for the
     /// fixed-sample (Wilson) and anytime-valid (confidence sequence) modes.
+    ///
+    /// `perArmConfidence` is separate from `confidence` on purpose. Newcombe's
+    /// square-root-of-sum-of-squares composition is an empirical calibration
+    /// derived *for Wilson score intervals*; it is not a theorem that transfers
+    /// to a Hoeffding confidence sequence. So when the components are anything
+    /// other than Wilson intervals, the honest guarantee is the union bound:
+    /// build each arm at `1 − α/2` and the pair is jointly valid at `1 − α`.
+    /// Callers should pass `perArmConfidence` accordingly rather than building
+    /// both arms at the target level and hoping the composition is tight.
     public static func differenceInterval(
         baseline: SliceCounts,
         candidate: SliceCounts,
         confidence: Double = 0.95,
+        perArmConfidence: Double? = nil,
         componentInterval: (Int, Int, Double) -> ProportionInterval? = { passed, total, confidence in
             wilsonInterval(passed: passed, total: total, confidence: confidence)
         }
     ) -> ProportionInterval? {
-        guard let base = componentInterval(baseline.passed, baseline.total, confidence),
-              let cand = componentInterval(candidate.passed, candidate.total, confidence) else { return nil }
+        let armConfidence: Double = {
+            guard let perArmConfidence, perArmConfidence.isFinite,
+                  perArmConfidence > 0, perArmConfidence < 1 else { return confidence }
+            return perArmConfidence
+        }()
+        guard let base = componentInterval(baseline.passed, baseline.total, armConfidence),
+              let cand = componentInterval(candidate.passed, candidate.total, armConfidence) else { return nil }
 
         let pointDifference = cand.pointEstimate - base.pointEstimate
         guard pointDifference.isFinite else { return nil }

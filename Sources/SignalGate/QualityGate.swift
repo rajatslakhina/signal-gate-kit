@@ -66,6 +66,42 @@ public struct GatePolicy: Sendable, Hashable, Codable {
     }
 
     public static let standard = GatePolicy()
+
+    // MARK: - Error budget allocation
+
+    /// The run-level error budget, `1 − confidence`.
+    public var runLevelAlpha: Double { 1 - confidence }
+
+    /// The gate blocks if **either** the per-slice family fires **or** the
+    /// overall non-inferiority test fires. Those are two hypothesis families,
+    /// and running each at the full run-level α means the probability that at
+    /// least one produces a false block is close to their union — which is the
+    /// exact error-inflation this package exists to eliminate, reproduced one
+    /// level up.
+    ///
+    /// So the run-level budget is split evenly between them. Each family gets
+    /// α/2, and the union is bounded by α.
+    ///
+    /// This is not free: halving each family's α widens the overall interval
+    /// and raises the per-slice bar, so the gate needs more samples to reach
+    /// any verdict. That is the correct trade — the alternative is a gate whose
+    /// stated 5% false-block rate is really closer to 10%.
+    public var overallAlpha: Double { runLevelAlpha / 2 }
+
+    /// Confidence level for the overall difference interval, after the split.
+    public var overallConfidence: Double { 1 - overallAlpha }
+
+    /// FDR level for the per-slice family, after the split.
+    public var sliceQ: Double { sliceFalseDiscoveryRate / 2 }
+
+    /// Confidence each *arm* of the difference interval is built at.
+    ///
+    /// The difference interval composes two single-arm intervals. Building both
+    /// at `overallConfidence` would give the composed interval joint coverage
+    /// of only about `1 − 2·overallAlpha`, so each arm is built at
+    /// `overallAlpha/2` and the pair is jointly valid at `overallAlpha` by a
+    /// union bound.
+    public var perArmConfidence: Double { 1 - overallAlpha / 2 }
 }
 
 /// The full, reviewable output of one gate evaluation.
@@ -184,12 +220,25 @@ public enum QualityGate {
         //    missing slice would silently be scored as "no regression."
         let baselineSliceIDs = Set(baselineSlices.map(\.sliceID))
         let candidateSliceIDs = Set(candidateSlices.map(\.sliceID))
-        let missing = baselineSliceIDs.subtracting(candidateSliceIDs)
-        if !missing.isEmpty {
-            rationale.append(
-                "Candidate run is missing \(missing.count) baseline slice(s): "
-                    + missing.sorted().joined(separator: ", ")
-            )
+        let missingFromCandidate = baselineSliceIDs.subtracting(candidateSliceIDs)
+        let missingFromBaseline = candidateSliceIDs.subtracting(baselineSliceIDs)
+        // Checked in *both* directions, as `InconclusiveReason.incomparableSlices`
+        // says. A candidate-only slice has no baseline to be compared against,
+        // so it would silently drop out of the family and be scored as "no
+        // regression" — a new locale shipping broken would read as clean.
+        if !missingFromCandidate.isEmpty || !missingFromBaseline.isEmpty {
+            if !missingFromCandidate.isEmpty {
+                rationale.append(
+                    "Candidate run is missing \(missingFromCandidate.count) baseline slice(s): "
+                        + missingFromCandidate.sorted().joined(separator: ", ")
+                )
+            }
+            if !missingFromBaseline.isEmpty {
+                rationale.append(
+                    "Candidate run has \(missingFromBaseline.count) slice(s) with no baseline to compare against: "
+                        + missingFromBaseline.sorted().joined(separator: ", ")
+                )
+            }
             return report(.inconclusive(reason: .incomparableSlices, additionalSamplesNeeded: nil))
         }
 
@@ -221,7 +270,7 @@ public enum QualityGate {
         }
 
         let corrected = MultipleComparisons.benjaminiHochberg(
-            tests: sliceTests, falseDiscoveryRate: policy.sliceFalseDiscoveryRate
+            tests: sliceTests, falseDiscoveryRate: policy.sliceQ
         )
         let sliceResults = corrected.results
         let regressedSlices = sliceResults.filter(\.isRegression)
@@ -236,8 +285,9 @@ public enum QualityGate {
             rationale.append(
                 String(
                     format: "%d slices tested. Uncorrected, this family would false-alarm %.0f%% of the time; "
-                        + "Benjamini-Hochberg at q=%.2f is applied instead.",
-                    sliceTests.count, familyWiseErrorRate * 100, policy.sliceFalseDiscoveryRate
+                        + "Benjamini-Hochberg at q=%.3f is applied instead (half the %.2f budget — the other "
+                        + "half is reserved for the overall test, since either family blocking blocks the merge).",
+                    sliceTests.count, familyWiseErrorRate * 100, policy.sliceQ, policy.sliceFalseDiscoveryRate
                 )
             )
         }
@@ -254,7 +304,8 @@ public enum QualityGate {
         let difference = ProportionStatistics.differenceInterval(
             baseline: baselineOverall,
             candidate: candidateOverall,
-            confidence: policy.confidence,
+            confidence: policy.overallConfidence,
+            perArmConfidence: policy.perArmConfidence,
             componentInterval: componentInterval
         )
 
@@ -289,8 +340,8 @@ public enum QualityGate {
         let margin = policy.nonInferiorityMargin
         rationale.append(
             String(
-                format: "Overall difference %+.3f, %.0f%% %@ interval [%+.3f, %+.3f]; non-inferiority margin -%.3f.",
-                difference.pointEstimate, policy.confidence * 100,
+                format: "Overall difference %+.3f, %.1f%% %@ interval [%+.3f, %+.3f]; non-inferiority margin -%.3f.",
+                difference.pointEstimate, policy.overallConfidence * 100,
                 policy.mode == .sequential ? "anytime-valid" : "Wilson-Newcombe",
                 difference.lowerBound, difference.upperBound, margin
             )
@@ -349,7 +400,7 @@ public enum QualityGate {
             currentPerArm: perArm,
             baselineRate: baselineOverall.passRate ?? 0,
             minimumDetectableEffect: policy.minimumDetectableEffect,
-            significance: 1 - policy.confidence,
+            significance: policy.overallAlpha,
             power: policy.power
         )
 

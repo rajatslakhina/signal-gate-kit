@@ -67,7 +67,8 @@ public enum GateScenario: String, Sendable, Hashable, Codable, CaseIterable, Ide
     public var detail: String {
         switch self {
         case .equivalent:
-            return "Candidate matches baseline. Should pass once there is enough evidence to say so."
+            return "Candidate matches baseline. Passes once there is enough evidence to say so — though at "
+                + "FDR q the slice family still produces the occasional false block, by design."
         case .noiseNotRegression:
             return "Candidate is 2 points lower — inside the 3-point margin. Blocking here is a false alarm."
         case .realRegression:
@@ -135,31 +136,61 @@ public enum GateScenario: String, Sendable, Hashable, Codable, CaseIterable, Ide
             // Judge passes 65/100, humans 57/100 — bias +0.08.
             return AgreementMatrix(bothPass: 55, judgePassHumanFail: 10, judgeFailHumanPass: 2, bothFail: 33)
         default:
-            // kappa ~0.79, bias +0.01 — comfortably inside the standard policy.
+            // kappa 0.835, bias +0.010 — comfortably inside the standard policy.
+            // (Verified in JudgeCalibrationTests, not eyeballed.)
             return AgreementMatrix(bothPass: 66, judgePassHumanFail: 4, judgeFailHumanPass: 3, bothFail: 27)
         }
     }
 
     /// Draws a reproducible run at the given per-arm sample size.
     ///
-    /// `samplesPerArm` is clamped into `1...100_000`: the UI drives it from a
+    /// ## Why the draw is nested
+    ///
+    /// Each slice gets its **own** generator, seeded independently of the
+    /// sample size, and the run at size *n* is a strict prefix of the run at
+    /// any larger size. That property is what makes the demo's slider mean
+    /// "collect more samples" rather than "run a different experiment at a
+    /// different n."
+    ///
+    /// The distinction is not cosmetic. With a single shared generator whose
+    /// stream position depends on `perSlice`, every slice past the first
+    /// shifts phase as soon as `n` changes, so consecutive slider positions
+    /// draw unrelated datasets. The verdict then flickers — block, inconclusive,
+    /// block — as `n` increases, which is the exact opposite of the argument
+    /// the demo is making, and it is a genuinely misleading thing to show
+    /// someone. Nested draws make the interval narrow monotonically in the way
+    /// the statistics say it should.
+    ///
+    /// `samplesPerArm` is clamped into `1...60_000`: the UI drives it from a
     /// slider, and a zero or negative value would otherwise produce an empty
     /// arm that the gate correctly but uninformatively reports as `.noSamples`.
     public func draw(samplesPerArm: Int, seed: UInt64 = 20_260_818) -> (baseline: [EvalSample], candidate: [EvalSample]) {
-        let perArm = Swift.min(100_000, Swift.max(1, samplesPerArm))
+        let perArm = Swift.min(60_000, Swift.max(1, samplesPerArm))
         let sliceCount = Swift.max(1, GateScenario.sliceIDs.count)
-        // Integer division is safe: `sliceCount` is at least 1 by construction.
-        let perSlice = Swift.max(1, perArm / sliceCount)
 
-        var generator = SplitMix64(seed: seed &+ seedOffset)
         var baseline: [EvalSample] = []
         var candidate: [EvalSample] = []
-        baseline.reserveCapacity(SafeMath.multiply(perSlice, sliceCount))
-        candidate.reserveCapacity(SafeMath.multiply(perSlice, sliceCount))
+        baseline.reserveCapacity(perArm)
+        candidate.reserveCapacity(perArm)
 
         for sliceIndex in 0..<sliceCount {
             guard let sliceID = SafeMath.element(GateScenario.sliceIDs, at: sliceIndex) else { continue }
             let candidateSliceRate = candidateRate(forSlice: sliceID)
+
+            // The remainder is distributed across the leading slices so the
+            // arms total exactly `perArm`, rather than silently returning fewer
+            // samples than the caller asked for. Integer division and modulo
+            // are both safe here: `sliceCount` is at least 1 by construction.
+            let base = perArm / sliceCount
+            let remainder = perArm % sliceCount
+            let perSlice = base + (sliceIndex < remainder ? 1 : 0)
+            guard perSlice > 0 else { continue }
+
+            // Seeded per slice and independent of `perArm`, so the sequence for
+            // this slice is identical at every sample size and shorter runs are
+            // prefixes of longer ones.
+            var generator = SplitMix64(seed: seed &+ seedOffset &* 1_000 &+ UInt64(sliceIndex))
+
             for index in 0..<perSlice {
                 baseline.append(
                     EvalSample(
