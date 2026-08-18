@@ -39,8 +39,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Tolerant rather than hardcoded. This job does not need an iOS SDK — it
+      # is a macOS `swift build`/`swift test` — but hardcoding a specific
+      # Xcode.app path makes the job depend on which Xcode versions a given
+      # hosted runner image happens to ship, and that assumption broke the
+      # companion demo repo's iOS job on a commit that changed only .gitignore.
+      # Same lesson, applied here before it bites.
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+        run: |
+          set -euo pipefail
+          for app in /Applications/Xcode_16*.app /Applications/Xcode.app; do
+            if [ -d "$app" ]; then sudo xcode-select -s "$app"; break; fi
+          done
+          xcodebuild -version
+          swift --version
 
       - name: Clean
         run: rm -rf .build
