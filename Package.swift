@@ -3,9 +3,17 @@ import PackageDescription
 
 let package = Package(
     name: "signal-gate-kit",
-    // Only platforms CI actually builds are declared. The Linux job builds the
-    // core module with swift build/test; the macOS job builds the demo app for
-    // the iOS Simulator. Nothing here claims a platform nobody compiles.
+    // Two platforms, and the split of what proves each is deliberate.
+    //
+    // This package's own CI runs `swift build`/`swift test` on Linux (core
+    // module only — SignalGateUI is behind `#if canImport(SwiftUI)`) and on
+    // macOS, where SwiftUI does exist and the view code is genuinely
+    // type-checked. Neither job compiles for iOS.
+    //
+    // The `.iOS(.v17)` claim is instead backed by the companion demo app's CI,
+    // which builds an iOS app against this package for `generic/platform=iOS
+    // Simulator`. That is a real check living in another repository, not an
+    // unbacked assertion here.
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
