@@ -153,7 +153,7 @@ Drag the sample-size slider and watch a verdict walk from `inconclusive` to a re
 See the [Actions tab](https://github.com/rajatslakhina/signal-gate-kit/actions) for what actually ran. Two jobs on every push:
 
 - **Linux** (`swift:6.0` container) — clean `.build`, then `swift build -Xswiftc -warnings-as-errors` and `swift test`. The warnings-as-errors flag is what makes "zero warnings" a machine-enforced fact rather than a claim in prose; the clean step is because `swift build` on an up-to-date tree compiles nothing and still prints `Build complete!`.
-- **macOS** (`macos-15`, Xcode 16) — same two commands. This is the job that genuinely compiles `SignalGateUI`, since SwiftUI is unavailable on Linux.
+- **macOS** (`macos-15`) — same two commands. This is the job that genuinely compiles `SignalGateUI`, since SwiftUI is unavailable on Linux. It selects whichever Xcode the runner provides rather than hardcoding a path — a hardcoded `Xcode_16.app` is exactly what broke the demo repo's iOS job on a commit that touched only `.gitignore`.
 
 Neither job compiles for iOS. That claim is instead carried by the demo app's CI, which runs `xcodebuild -resolvePackageDependencies` (proving this package resolves from GitHub at its released tag) and then builds an iOS app against it for `generic/platform=iOS Simulator`. Both steps have run and passed — see the [demo repo's Actions tab](https://github.com/rajatslakhina/signal-gate-kit-demo-app/actions).
 
