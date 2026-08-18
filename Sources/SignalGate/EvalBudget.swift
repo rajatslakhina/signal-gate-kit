@@ -92,8 +92,43 @@ public actor EvalBudgetLedger {
         currentState()
     }
 
-    /// Whether another sample can be afforded at the given estimated cost.
+    /// Charges only if the projected total stays within every ceiling, and
+    /// does the check and the mutation in **one** actor call.
+    ///
+    /// This is the method to use. `canAfford` followed by `charge` is two
+    /// separate actor calls with a suspension point between them, and actor
+    /// exclusivity holds *within* a call, not *across* two — so that pairing
+    /// reproduces exactly the double-spend this type's documentation says is
+    /// unrepresentable. It is unrepresentable inside one method; it is entirely
+    /// representable across two.
+    ///
+    /// Returns `nil` when the charge was refused, so a caller cannot mistake a
+    /// refusal for a successful debit.
+    @discardableResult
+    public func chargeIfAffordable(
+        costUSD: Double,
+        latencySeconds: Double,
+        calls: Int = 1
+    ) -> BudgetState? {
+        guard affordabilityCheck(estimatedCostUSD: costUSD, estimatedLatencySeconds: latencySeconds) else {
+            return nil
+        }
+        return charge(costUSD: costUSD, latencySeconds: latencySeconds, calls: calls)
+    }
+
+    /// Advisory only — see `chargeIfAffordable`.
+    ///
+    /// A `true` here is a statement about the ledger at the moment of the call
+    /// and nothing more. By the time the caller acts on it, another task may
+    /// have spent the headroom.
     public func canAfford(estimatedCostUSD: Double, estimatedLatencySeconds: Double) -> Bool {
+        affordabilityCheck(
+            estimatedCostUSD: estimatedCostUSD,
+            estimatedLatencySeconds: estimatedLatencySeconds
+        )
+    }
+
+    private func affordabilityCheck(estimatedCostUSD: Double, estimatedLatencySeconds: Double) -> Bool {
         guard !currentState().isExhausted else { return false }
         let projectedSpend = spentUSD + (estimatedCostUSD.isFinite && estimatedCostUSD > 0 ? estimatedCostUSD : 0)
         let projectedTime = elapsedSeconds

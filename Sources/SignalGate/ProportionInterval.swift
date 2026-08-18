@@ -216,27 +216,49 @@ public enum ProportionStatistics {
     /// `componentInterval` is injected so the same composition works for the
     /// fixed-sample (Wilson) and anytime-valid (confidence sequence) modes.
     ///
-    /// `perArmConfidence` is separate from `confidence` on purpose. Newcombe's
-    /// square-root-of-sum-of-squares composition is an empirical calibration
-    /// derived *for Wilson score intervals*; it is not a theorem that transfers
-    /// to a Hoeffding confidence sequence. So when the components are anything
-    /// other than Wilson intervals, the honest guarantee is the union bound:
-    /// build each arm at `1 − α/2` and the pair is jointly valid at `1 − α`.
-    /// Callers should pass `perArmConfidence` accordingly rather than building
-    /// both arms at the target level and hoping the composition is tight.
+    /// `composition` selects how the two arms are combined, and getting this
+    /// pairing right matters more than it looks.
+    ///
+    /// Newcombe's root-sum-of-squares is an *empirical calibration derived for
+    /// Wilson score intervals*. It is not a theorem, and it does not transfer to
+    /// a Hoeffding confidence sequence. Using RSS on sequence components would
+    /// be claiming a guarantee that has not been established — while also being
+    /// strictly narrower than the union bound that would establish one, i.e.
+    /// anti-conservative relative to its own derivation.
+    ///
+    /// So: `.newcombe` composes Wilson arms built at the target level, and
+    /// `.unionBound` composes arms each built at `1 − α/2` using linear radii,
+    /// which is the composition the union bound actually justifies. An earlier
+    /// version mixed the two — RSS radii on arms inflated for a union bound —
+    /// and got the worst of both: wider than Newcombe, narrower than the bound
+    /// it cited.
+    public enum DifferenceComposition: Sendable, Hashable {
+        /// Newcombe method 10. Valid for Wilson components at the target level.
+        case newcombe
+        /// Linear (rectangle) composition of two arms each at `1 − α/2`.
+        /// Distribution-free, and correct for any component interval.
+        case unionBound
+    }
+
     public static func differenceInterval(
         baseline: SliceCounts,
         candidate: SliceCounts,
         confidence: Double = 0.95,
-        perArmConfidence: Double? = nil,
+        composition: DifferenceComposition = .newcombe,
         componentInterval: (Int, Int, Double) -> ProportionInterval? = { passed, total, confidence in
             wilsonInterval(passed: passed, total: total, confidence: confidence)
         }
     ) -> ProportionInterval? {
+        // Under the union bound each arm carries half the error budget.
         let armConfidence: Double = {
-            guard let perArmConfidence, perArmConfidence.isFinite,
-                  perArmConfidence > 0, perArmConfidence < 1 else { return confidence }
-            return perArmConfidence
+            switch composition {
+            case .newcombe:
+                return confidence
+            case .unionBound:
+                let alpha = 1 - confidence
+                let halved = 1 - alpha / 2
+                return (halved.isFinite && halved > 0 && halved < 1) ? halved : confidence
+            }
         }()
         guard let base = componentInterval(baseline.passed, baseline.total, armConfidence),
               let cand = componentInterval(candidate.passed, candidate.total, armConfidence) else { return nil }
@@ -249,12 +271,23 @@ public enum ProportionStatistics {
         let upperTermCandidate = cand.upperBound - cand.pointEstimate
         let upperTermBaseline = base.pointEstimate - base.lowerBound
 
-        let lowerRadius = SafeMath.sqrtClampingNegative(
-            lowerTermCandidate * lowerTermCandidate + lowerTermBaseline * lowerTermBaseline
-        )
-        let upperRadius = SafeMath.sqrtClampingNegative(
-            upperTermCandidate * upperTermCandidate + upperTermBaseline * upperTermBaseline
-        )
+        let lowerRadius: Double
+        let upperRadius: Double
+        switch composition {
+        case .newcombe:
+            lowerRadius = SafeMath.sqrtClampingNegative(
+                lowerTermCandidate * lowerTermCandidate + lowerTermBaseline * lowerTermBaseline
+            )
+            upperRadius = SafeMath.sqrtClampingNegative(
+                upperTermCandidate * upperTermCandidate + upperTermBaseline * upperTermBaseline
+            )
+        case .unionBound:
+            // Linear sum: the projection of the joint rectangle onto the
+            // difference axis. Wider than RSS, and actually implied by the
+            // union bound over two arms.
+            lowerRadius = lowerTermCandidate + lowerTermBaseline
+            upperRadius = upperTermCandidate + upperTermBaseline
+        }
 
         let lower = Swift.max(-1, pointDifference - lowerRadius)
         let upper = Swift.min(1, pointDifference + upperRadius)

@@ -87,8 +87,9 @@ public enum SafeMath {
     /// silently through an interval and out into a gate decision.
     public static func sqrtClampingNegative(_ value: Double) -> Double {
         // `-infinity` returns 0, not `+infinity`: the square root of a negative
-        // number is not a real number, and the contract of this function is
-        // that it never emits a non-finite value.
+        // number is not a real number. `+infinity` is passed through, since
+        // that is the mathematically correct answer; the contract is "never
+        // NaN, never negative", not "always finite".
         guard value.isFinite else { return value == .infinity ? .infinity : 0 }
         return value <= 0 ? 0 : value.squareRoot()
     }
@@ -96,8 +97,10 @@ public enum SafeMath {
     /// Natural log with the argument clamped to a small positive number, so
     /// `log(0)` cannot produce `-infinity` and poison a confidence radius.
     public static func logClampingNonPositive(_ value: Double) -> Double {
-        // As with `sqrtClampingNegative`, `-infinity` maps to 0 rather than
-        // propagating a non-finite value the caller cannot use.
+        // As with `sqrtClampingNegative`: `-infinity` maps to 0 because the log
+        // of a negative number is undefined, while `+infinity` passes through
+        // as the correct answer. The contract is "never NaN, never
+        // `-infinity`" — the two values that would poison a confidence radius.
         guard value.isFinite else { return value == .infinity ? .infinity : 0 }
         let floorValue = Double.leastNormalMagnitude
         return log(Swift.max(value, floorValue))

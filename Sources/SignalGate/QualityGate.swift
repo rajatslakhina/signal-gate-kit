@@ -31,7 +31,9 @@ public struct GatePolicy: Sendable, Hashable, Codable {
     public let nonInferiorityMargin: Double
     /// Confidence level for the interval on the difference.
     public let confidence: Double
-    /// FDR level for the per-slice family.
+    /// Budget allocated to the per-slice family. The FDR level actually
+    /// applied is `sliceQ`, which is half of this — see the error-budget
+    /// allocation section below for why.
     public let sliceFalseDiscoveryRate: Double
     /// Effect size the sample-size advice is computed against.
     public let minimumDetectableEffect: Double
@@ -74,33 +76,47 @@ public struct GatePolicy: Sendable, Hashable, Codable {
 
     /// The gate blocks if **either** the per-slice family fires **or** the
     /// overall non-inferiority test fires. Those are two hypothesis families,
-    /// and running each at the full run-level α means the probability that at
-    /// least one produces a false block is close to their union — which is the
-    /// exact error-inflation this package exists to eliminate, reproduced one
-    /// level up.
+    /// and running each at its full configured level means the probability that
+    /// at least one produces a false block is close to their union — the exact
+    /// error-inflation this package exists to eliminate, reproduced one level
+    /// up.
     ///
-    /// So the run-level budget is split evenly between them. Each family gets
-    /// α/2, and the union is bounded by α.
+    /// So each family is run at **half** its configured level.
     ///
-    /// This is not free: halving each family's α widens the overall interval
-    /// and raises the per-slice bar, so the gate needs more samples to reach
-    /// any verdict. That is the correct trade — the alternative is a gate whose
-    /// stated 5% false-block rate is really closer to 10%.
+    /// Note precisely what that does and does not buy. `confidence` and
+    /// `sliceFalseDiscoveryRate` are independent knobs, so the two halves sum
+    /// to the run-level α only when they are configured equal — which the
+    /// default policy is, but a custom one need not be. The honest guarantee is
+    /// therefore `unionFalseBlockBound`, computed below, not "α". Stating it as
+    /// α would be the same kind of unbacked claim the package exists to catch.
+    ///
+    /// This is not free: halving each level widens the overall interval and
+    /// raises the per-slice bar, so the gate needs more samples to reach any
+    /// verdict. That is the correct trade — the alternative is a gate whose
+    /// advertised false-block rate is roughly half the real one.
     public var overallAlpha: Double { runLevelAlpha / 2 }
+
+    /// Union bound on the probability of a false block from either family.
+    ///
+    /// This is the number to quote when someone asks how often the gate blocks
+    /// a clean build. For the default policy it is exactly `runLevelAlpha`; for
+    /// a policy whose two knobs disagree it is larger, and the gate says so
+    /// rather than quoting the more flattering figure.
+    public var unionFalseBlockBound: Double { Swift.min(1, overallAlpha + sliceQ) }
 
     /// Confidence level for the overall difference interval, after the split.
     public var overallConfidence: Double { 1 - overallAlpha }
 
-    /// FDR level for the per-slice family, after the split.
+    /// FDR level actually applied to the per-slice family, after the split.
+    ///
+    /// Deliberately *not* `sliceFalseDiscoveryRate`: that property is the
+    /// budget the caller allocates to slice testing, and half of it is spent
+    /// here so the other half can cover the overall test.
     public var sliceQ: Double { sliceFalseDiscoveryRate / 2 }
 
-    /// Confidence each *arm* of the difference interval is built at.
-    ///
-    /// The difference interval composes two single-arm intervals. Building both
-    /// at `overallConfidence` would give the composed interval joint coverage
-    /// of only about `1 − 2·overallAlpha`, so each arm is built at
-    /// `overallAlpha/2` and the pair is jointly valid at `overallAlpha` by a
-    /// union bound.
+    /// Confidence each *arm* is built at when the composition is a union
+    /// bound (sequential mode). Exposed for reporting; the composition itself
+    /// derives it, so callers never have to keep the two in sync.
     public var perArmConfidence: Double { 1 - overallAlpha / 2 }
 }
 
@@ -285,9 +301,11 @@ public enum QualityGate {
             rationale.append(
                 String(
                     format: "%d slices tested. Uncorrected, this family would false-alarm %.0f%% of the time; "
-                        + "Benjamini-Hochberg at q=%.3f is applied instead (half the %.2f budget — the other "
-                        + "half is reserved for the overall test, since either family blocking blocks the merge).",
-                    sliceTests.count, familyWiseErrorRate * 100, policy.sliceQ, policy.sliceFalseDiscoveryRate
+                        + "Benjamini-Hochberg at q=%.3f is applied instead (half the %.2f slice budget, the other "
+                        + "half reserved for the overall test). Union bound on a false block from either "
+                        + "family: %.3f.",
+                    sliceTests.count, familyWiseErrorRate * 100, policy.sliceQ,
+                    policy.sliceFalseDiscoveryRate, policy.unionFalseBlockBound
                 )
             )
         }
@@ -301,11 +319,13 @@ public enum QualityGate {
                 return ProportionStatistics.confidenceSequence(passed: passed, total: total, confidence: confidence)
             }
         }
+        // Newcombe is only valid for Wilson components, so sequential mode —
+        // whose components are Hoeffding sequences — composes by union bound.
         let difference = ProportionStatistics.differenceInterval(
             baseline: baselineOverall,
             candidate: candidateOverall,
             confidence: policy.overallConfidence,
-            perArmConfidence: policy.perArmConfidence,
+            composition: policy.mode == .sequential ? .unionBound : .newcombe,
             componentInterval: componentInterval
         )
 
