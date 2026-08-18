@@ -54,7 +54,9 @@ This is not a hypothetical. It is the default behaviour of every per-slice quali
 
 The gate blocks if **either** the per-slice family fires **or** the overall non-inferiority test fires. Those are two hypothesis families. Running each at the full run-level α puts the true false-block rate near their union — which is exactly the bug §2 exists to eliminate, reproduced at the level above it.
 
-An earlier build of this package had precisely that flaw, and its footprint was measurable: on the "2-point wobble" scenario — a build the package itself defines as a non-regression — it blocked at 23 of 499 reachable sample sizes. Each family now runs at **half** its configured level (`GatePolicy.overallAlpha`, `GatePolicy.sliceQ`), and `testTheWobbleScenarioNeverBlocksAtAnySliderPosition` sweeps every one of those sample sizes to keep it fixed: it now blocks at zero of them.
+An earlier build of this package had precisely that flaw. Each family now runs at **half** its configured level (`GatePolicy.overallAlpha`, `GatePolicy.sliceQ`).
+
+A caveat about that claim, in the spirit of the package: an independent review reconstructed the pre-fix configuration and could **not** reproduce a difference in blocking behaviour on the built-in scenarios — both versions block the "2-point wobble" at zero of 499 sample sizes. So `testTheWobbleScenarioNeverBlocksAtAnySliderPosition` is a useful invariant but is **not** a regression test for this split; the split rests on the argument, not on an observed failure. `testUnionBoundIsReportedHonestlyAtNonDefaultPolicies` is what actually pins the arithmetic.
 
 One nuance the package is careful not to paper over. `confidence` and `sliceFalseDiscoveryRate` are independent knobs, so the two halves sum to the run-level α only when they happen to be configured equal — as the default policy is. The honest guarantee is therefore `GatePolicy.unionFalseBlockBound`, which the gate computes and writes into its own rationale. At `confidence: 0.99, sliceFalseDiscoveryRate: 0.10` that bound is 0.055, not the 0.01 the confidence level alone would suggest, and the gate says 0.055.
 
@@ -112,7 +114,7 @@ Since the point of this section is precision, the exceptions are worth naming ra
 
 ## On the tests
 
-**108 tests.** A meaningful share of them implement the *wrong* thing on purpose.
+**112 tests.** Five of them implement the *wrong* thing on purpose.
 
 `NegativeControlTests` exists because a suite that only asserts the correct implementation behaves correctly is unfalsifiable — it would pass even if the property being checked were vacuous. So for each claim above, there is a test that feeds in the broken alternative and asserts it **fails**:
 
@@ -159,7 +161,14 @@ Neither job compiles for iOS. That claim is instead carried by the demo app's CI
 
 The demo app was **not** launched on a Simulator during the run that produced these repositories — computer-use access is refused on scheduled runs, and the refusal is quoted verbatim in the demo repo's README. No screenshots exist, and "compiles for a Simulator" is a separate and weaker claim than "ran on a Simulator."
 
-This package was also reviewed by an independent adversarial pass that found twenty issues, including two genuine statistical composition errors (§3 above, and the arm-composition problem in the sequential mode). Both are fixed, and both now have tests. The review's other findings — a misstated interval-width ratio, three vacuous assertions, a non-monotone demo interaction — are fixed here too.
+This package went through three rounds of independent adversarial review, which raised 18 issues in round 2 and 15 more in round 3. Everything material is fixed, including:
+
+- a **critical** one found in the final round: a slice that had completely collapsed (100% → 0%) made its own test undefined, and the gate silently dropped it — so a build with an entire locale at zero could return `.pass` if the aggregate held. Now surfaced through `discardedSlices` and forced to `.inconclusive`, with `testATotallyCollapsedSliceIsNeverSilentlyDropped` pinning it.
+- two genuine statistical composition errors (the error-budget union in §3, and Newcombe's calibration being applied to a Hoeffding sequence).
+- `chargeIfAffordable` approving a 500-call charge against a ceiling of 2, because the affordability check hardcoded a call count of 1.
+- several assertions that would have passed against a deliberately broken implementation.
+
+**The final round's fixes were not themselves independently re-reviewed** — the loop is capped at three rounds and that budget was spent. Known-remaining nits from round 3, none of them correctness bugs: `continuityTerm` is a misnomer for a standard Wilson term; `perArmConfidence` is now read only by a test; `differenceInterval(confidence: 0, composition: .unionBound)` returns an interval labelled `confidence: 0` instead of `nil` (unreachable through `QualityGate`, which clamps); and in `.sequential` mode only the overall interval is anytime-valid — the per-slice family still uses a fixed-`n` test, which is a real limitation and is stated here rather than in prose that implies otherwise.
 
 ## License
 
